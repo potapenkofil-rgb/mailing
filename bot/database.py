@@ -194,6 +194,17 @@ async def get_all_user_ids() -> list[int]:
         return [r[0] for r in rows]
 
 
+async def get_user_by_username(username: str) -> dict | None:
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            "SELECT * FROM users WHERE LOWER(username) = LOWER(?)",
+            (username.lstrip('@'),)
+        )
+        row = await cursor.fetchone()
+        return dict(row) if row else None
+
+
 # ==================== ACCOUNTS ====================
 
 async def get_accounts(user_id: int) -> list[dict]:

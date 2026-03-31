@@ -33,6 +33,13 @@ def cancel_kb() -> InlineKeyboardMarkup:
     ])
 
 
+def resend_code_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔄 Запросить новый код", callback_data="acc_resend_code")],
+        [InlineKeyboardButton(text="❌ Отмена", callback_data="cancel")],
+    ])
+
+
 # ==================== ACCOUNTS ====================
 
 def accounts_kb(accounts: list[dict], can_add: bool) -> InlineKeyboardMarkup:
@@ -213,11 +220,26 @@ def scheduled_detail_kb(sched_id: int) -> InlineKeyboardMarkup:
 def admin_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📊 Статистика подписок", callback_data="adm_stats")],
+        [InlineKeyboardButton(text="🔍 Найти пользователя", callback_data="adm_search")],
         [InlineKeyboardButton(text="🚫 Бан пользователя", callback_data="adm_ban")],
         [InlineKeyboardButton(text="✅ Разбан пользователя", callback_data="adm_unban")],
         [InlineKeyboardButton(text="💎 Управление подпиской", callback_data="adm_sub")],
         [InlineKeyboardButton(text="💰 Изменить цены", callback_data="adm_prices")],
         [InlineKeyboardButton(text="📢 Рассылка по боту", callback_data="adm_broadcast")],
+    ])
+
+
+def admin_user_card_kb(is_banned: bool) -> InlineKeyboardMarkup:
+    ban_btn = (
+        InlineKeyboardButton(text="✅ Разбанить", callback_data="adm_card_unban")
+        if is_banned
+        else InlineKeyboardButton(text="🚫 Забанить", callback_data="adm_card_ban")
+    )
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [ban_btn],
+        [InlineKeyboardButton(text="💎 Управление подпиской", callback_data="adm_card_sub")],
+        [InlineKeyboardButton(text="🔍 Найти другого", callback_data="adm_search")],
+        [InlineKeyboardButton(text="🔙 Админ-панель", callback_data="admin")],
     ])
 
 

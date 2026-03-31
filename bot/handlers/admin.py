@@ -8,7 +8,7 @@ from aiogram.filters import Command
 
 import database as db
 from config import ADMIN_ID
-from keyboards import admin_kb, admin_prices_kb, back_menu_kb
+from keyboards import admin_kb, admin_prices_kb, back_menu_kb, admin_user_card_kb
 
 router = Router()
 
@@ -23,6 +23,8 @@ class AdminStates(StatesGroup):
     price_slot = State()
     price_ref = State()
     broadcast_text = State()
+    search_user = State()
+    search_action = State()
 
 
 def is_admin(user_id: int) -> bool:
@@ -78,6 +80,127 @@ async def cb_adm_stats(callback: CallbackQuery):
         [InlineKeyboardButton(text="🔙 Админ-панель", callback_data="admin")]
     ])
     await callback.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
+    await callback.answer()
+
+
+# ==================== ПОИСК ПОЛЬЗОВАТЕЛЯ ====================
+
+@router.callback_query(F.data == "adm_search")
+async def cb_adm_search(callback: CallbackQuery, state: FSMContext):
+    if not is_admin(callback.from_user.id):
+        return
+    from keyboards import cancel_kb
+    await state.clear()
+    await callback.message.edit_text(
+        "🔍 Введите <b>username</b> пользователя (с @ или без):",
+        reply_markup=cancel_kb(), parse_mode="HTML"
+    )
+    await state.set_state(AdminStates.search_user)
+    await callback.answer()
+
+
+@router.message(AdminStates.search_user)
+async def process_search(message: Message, state: FSMContext):
+    if not is_admin(message.from_user.id):
+        return
+
+    username = message.text.strip().lstrip('@')
+    if not username:
+        await message.answer("❌ Введите username:")
+        return
+
+    user = await db.get_user_by_username(username)
+    if not user:
+        await message.answer(
+            f"❌ Пользователь <b>@{username}</b> не найден.",
+            reply_markup=admin_kb(), parse_mode="HTML"
+        )
+        await state.clear()
+        return
+
+    uid = user["user_id"]
+    is_sub = await db.is_subscribed(uid)
+    sub_end = user.get("subscription_end", "нет")
+    is_banned = bool(user.get("is_banned", 0))
+
+    if sub_end == "forever":
+        sub_text = "♾ Навсегда"
+    elif is_sub and sub_end:
+        sub_text = f"до {sub_end[:10]}"
+    else:
+        sub_text = "❌ Нет"
+
+    text = (
+        f"👤 <b>Пользователь найден</b>\n\n"
+        f"🆔 ID: <code>{uid}</code>\n"
+        f"👤 Username: @{user.get('username', '—')}\n"
+        f"📝 Имя: {user.get('first_name', '—')}\n"
+        f"💎 Подписка: {sub_text}\n"
+        f"🚫 Статус: {'Заблокирован 🔴' if is_banned else 'Активен 🟢'}\n"
+        f"📅 Регистрация: {(user.get('created_at') or '')[:10] or '—'}"
+    )
+
+    await state.update_data(found_uid=uid)
+    await state.set_state(AdminStates.search_action)
+    await message.answer(text, reply_markup=admin_user_card_kb(is_banned), parse_mode="HTML")
+
+
+@router.callback_query(F.data == "adm_card_ban", AdminStates.search_action)
+async def cb_card_ban(callback: CallbackQuery, state: FSMContext):
+    if not is_admin(callback.from_user.id):
+        return
+    data = await state.get_data()
+    uid = data["found_uid"]
+    await db.update_user(uid, is_banned=1)
+    await callback.message.edit_text(
+        f"✅ Пользователь <b>{uid}</b> забанен.",
+        reply_markup=admin_kb(), parse_mode="HTML"
+    )
+    await state.clear()
+    await callback.answer()
+
+
+@router.callback_query(F.data == "adm_card_unban", AdminStates.search_action)
+async def cb_card_unban(callback: CallbackQuery, state: FSMContext):
+    if not is_admin(callback.from_user.id):
+        return
+    data = await state.get_data()
+    uid = data["found_uid"]
+    await db.update_user(uid, is_banned=0)
+    await callback.message.edit_text(
+        f"✅ Пользователь <b>{uid}</b> разбанен.",
+        reply_markup=admin_kb(), parse_mode="HTML"
+    )
+    await state.clear()
+    await callback.answer()
+
+
+@router.callback_query(F.data == "adm_card_sub", AdminStates.search_action)
+async def cb_card_sub(callback: CallbackQuery, state: FSMContext):
+    if not is_admin(callback.from_user.id):
+        return
+    data = await state.get_data()
+    uid = data["found_uid"]
+    user = await db.get_user(uid)
+    sub_end = user.get("subscription_end", "нет")
+
+    from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="➕ Добавить дни", callback_data="adm_sub_add")],
+        [InlineKeyboardButton(text="➖ Убрать дни", callback_data="adm_sub_remove")],
+        [InlineKeyboardButton(text="♾ Навсегда", callback_data="adm_sub_forever")],
+        [InlineKeyboardButton(text="❌ Забрать подписку", callback_data="adm_sub_revoke")],
+        [InlineKeyboardButton(text="🔙 Админ-панель", callback_data="admin")]
+    ])
+
+    await callback.message.edit_text(
+        f"💎 Пользователь: <b>{uid}</b>\n"
+        f"Подписка: <code>{sub_end[:16] if sub_end != 'forever' else '♾ Навсегда'}</code>\n\n"
+        f"Выберите действие:",
+        reply_markup=kb, parse_mode="HTML"
+    )
+    await state.update_data(target_uid=uid)
+    await state.set_state(AdminStates.sub_action)
     await callback.answer()
 
 

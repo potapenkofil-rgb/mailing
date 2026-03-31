@@ -10,11 +10,11 @@ from telethon.sessions import StringSession
 from telethon.errors import (
     SessionPasswordNeededError, PhoneCodeInvalidError,
     PasswordHashInvalidError, PhoneNumberInvalidError,
-    ApiIdInvalidError
+    ApiIdInvalidError, PhoneCodeExpiredError, FloodWaitError
 )
 
 import database as db
-from keyboards import accounts_kb, account_detail_kb, cancel_kb, back_menu_kb
+from keyboards import accounts_kb, account_detail_kb, cancel_kb, back_menu_kb, resend_code_kb
 
 router = Router()
 
@@ -161,7 +161,9 @@ async def process_phone(message: Message, state: FSMContext):
         await wait_msg.edit_text(
             "📨 Код отправлен! Введите <b>код подтверждения</b> из Telegram:\n\n"
             "⚠️ Введите код через пробелы или дефисы (например: 1-2-3-4-5), "
-            "чтобы Telegram не заблокировал его.",
+            "чтобы Telegram не заблокировал его.\n\n"
+            "⏱ Код действует ~5 минут. Если не успеете — нажмите «🔄 Запросить новый код».",
+            reply_markup=resend_code_kb(),
             parse_mode="HTML"
         )
         await state.set_state(AddAccountStates.code)
@@ -185,8 +187,11 @@ async def process_code(message: Message, state: FSMContext):
 
     client = _pending_clients.get(user_id)
     if not client:
-        await message.answer("❌ Сессия истекла. Начните заново.", reply_markup=cancel_kb())
-        await state.clear()
+        await message.answer(
+            "⏱ Сессия авторизации потеряна.\n"
+            "Нажмите <b>«🔄 Запросить новый код»</b> — вам не придётся вводить API ID и номер заново.",
+            reply_markup=resend_code_kb(), parse_mode="HTML"
+        )
         return
 
     try:
@@ -212,8 +217,27 @@ async def process_code(message: Message, state: FSMContext):
         )
         await state.set_state(AddAccountStates.password)
 
+    except PhoneCodeExpiredError:
+        await message.answer(
+            "⏱ Код истёк. Нажмите <b>«🔄 Запросить новый код»</b>:",
+            reply_markup=resend_code_kb(), parse_mode="HTML"
+        )
+
     except PhoneCodeInvalidError:
-        await message.answer("❌ Неверный код. Попробуйте ещё раз:", reply_markup=cancel_kb())
+        await message.answer(
+            "❌ Неверный код. Попробуйте ещё раз или запросите новый:",
+            reply_markup=resend_code_kb()
+        )
+
+    except FloodWaitError as e:
+        await message.answer(
+            f"⏳ Слишком много попыток. Подождите {e.seconds} сек. и запросите новый код.",
+            reply_markup=cancel_kb()
+        )
+        await state.clear()
+        if client:
+            await client.disconnect()
+        _pending_clients.pop(user_id, None)
 
     except Exception as e:
         await message.answer(f"❌ Ошибка: {e}", reply_markup=cancel_kb())
@@ -258,6 +282,62 @@ async def process_password(message: Message, state: FSMContext):
         if client:
             await client.disconnect()
         _pending_clients.pop(user_id, None)
+
+
+@router.callback_query(F.data == "acc_resend_code", AddAccountStates.code)
+async def cb_resend_code(callback: CallbackQuery, state: FSMContext):
+    user_id = callback.from_user.id
+    data = await state.get_data()
+
+    if not data.get("api_id") or not data.get("phone"):
+        await callback.message.edit_text(
+            "❌ Данные сессии потеряны. Начните добавление аккаунта заново.",
+            reply_markup=back_menu_kb()
+        )
+        await state.clear()
+        await callback.answer()
+        return
+
+    # Отключаем старый клиент если есть
+    old_client = _pending_clients.pop(user_id, None)
+    if old_client:
+        try:
+            await old_client.disconnect()
+        except Exception:
+            pass
+
+    wait_msg = await callback.message.edit_text("⏳ Отправляю новый код...")
+
+    try:
+        client = TelegramClient(
+            StringSession(),
+            int(data["api_id"]),
+            data["api_hash"]
+        )
+        await client.connect()
+        result = await client.send_code_request(data["phone"])
+        await state.update_data(phone_code_hash=result.phone_code_hash)
+        _pending_clients[user_id] = client
+
+        await wait_msg.edit_text(
+            "📨 Новый код отправлен! Введите <b>код подтверждения</b> из Telegram:\n\n"
+            "⚠️ Вводите через пробелы или дефисы (например: 1-2-3-4-5).\n\n"
+            "⏱ Код действует ~5 минут.",
+            reply_markup=resend_code_kb(),
+            parse_mode="HTML"
+        )
+
+    except FloodWaitError as e:
+        await wait_msg.edit_text(
+            f"⏳ Слишком часто запрашиваете код. Подождите {e.seconds} сек.",
+            reply_markup=cancel_kb()
+        )
+        await state.clear()
+    except Exception as e:
+        await wait_msg.edit_text(f"❌ Не удалось отправить код: {e}", reply_markup=cancel_kb())
+        await state.clear()
+
+    await callback.answer()
 
 
 @router.callback_query(F.data == "cancel")
